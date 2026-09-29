@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SMK-37 Pro · FM-SysEx</title>
+<meta name="description" content="SMK-37 Pro FM-SysEx Web-App für DX7 SysEx über Web MIDI und Bluetooth LE MIDI">
+<style>
+:root{--bg:#f5f5f2;--fg:#1c1c1a;--mut:#6b6b66;--card:#fff;--line:#d9d9d2;--acc:#2f6fed;--ok:#14803f;--err:#c62f26;--tx:#a85a00;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#131315;--fg:#ececea;--mut:#9a9a94;--card:#1d1d20;--line:#333338;--acc:#6b9bff;--ok:#4cc27d;--err:#ff7b72;--tx:#f0a44b}}
+:root[data-theme="dark"]{--bg:#131315;--fg:#ececea;--mut:#9a9a94;--card:#1d1d20;--line:#333338;--acc:#6b9bff;--ok:#4cc27d;--err:#ff7b72;--tx:#f0a44b}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+.row{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;align-items:end}
+.mut{color:var(--mut)}.ok{color:var(--ok)}.err{color:var(--err)}
+button{min-height:44px;padding:0 14px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);font:inherit;cursor:pointer}
+button.p{background:var(--acc);border-color:var(--acc);color:#fff}
+label{display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--mut);min-width:0}
+label.c{flex-direction:row;align-items:center;gap:6px}
+select{min-height:40px;max-width:100%;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);font:inherit;padding:0 6px}
+textarea{width:100%;box-sizing:border-box;height:90px;font:12px/1.4 ui-monospace,Menlo,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px}
+#names{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:2px 12px;font:13px ui-monospace,Menlo,monospace;margin:8px 0}
+#log{font:11.5px/1.5 ui-monospace,Menlo,monospace;max-height:260px;overflow:auto;overflow-x:auto;white-space:pre}
+#log .RX{color:var(--ok)}#log .TX{color:var(--tx)}
+</style></head><body><main>
+<h1>SMK-37 Pro · FM-SysEx</h1>
+<div class="mut">Senden und Empfangen von DX7-SysEx (Bank/Einzelstimme) für die FM-Engine.</div>
+
+<section><h2>1 · Verbindung</h2>
+<div class="row"><button class="p" id="bUsb">USB / Web MIDI</button><button class="p" id="bBle">Bluetooth LE direkt</button>
+<label class="c"><input type="checkbox" id="all"> alle BLE-Geräte zeigen</label></div>
+<div class="row" id="ports" hidden><label>Eingang<select id="sIn"></select></label><label>Ausgang<select id="sOut"></select></label></div>
+<div id="st" class="mut">Nicht verbunden.</div></section>
+
+<section><h2>2 · Übertragen</h2>
+<div class="row"><label>Geräte-Nr.<select id="dev"></select></label>
+<button id="bReqB">Bank anfordern</button><button id="bReqV">Stimme anfordern</button></div>
+<div class="row"><button id="bLoad">Datei laden</button><input type="file" id="file" hidden>
+<button class="p" id="bSend">Senden</button><button id="bSave">Speichern</button></div></section>
+
+<section><h2>3 · Inhalt</h2>
+<div id="info" class="mut">Noch nichts geladen oder empfangen.</div><div id="names"></div>
+<textarea id="hx" spellcheck="false" placeholder="Hex-Bytes, z. B. F0 43 20 09 F7"></textarea>
+<div class="row"><button id="bHex">Hex senden</button><button id="bCopy">Hex kopieren</button></div></section>
+
+<section><h2>4 · Monitor</h2><div id="log"></div><div class="row"><button id="bClr">Leeren</button></div></section>
+</main>
+<footer style="max-width:760px;margin:0 auto;padding:0 16px 24px;text-align:center;font-size:12px;color:var(--mut)">
+  SMK-37 Pro · FM-SysEx · Statische Web-App
+</footer>
+<script>
+const $=s=>document.getElementById(s),sleep=t=>new Promise(r=>setTimeout(r,t));
+const H=b=>Array.from(b,x=>x.toString(16).padStart(2,'0')).join(' ').toUpperCase();
+const parseHex=t=>{const m=t.replace(/0x/gi,'').match(/[0-9a-f]{2}/gi);return new Uint8Array(m?m.map(h=>parseInt(h,16)):[])};
+let tx=null,cur=null,buf=null,sx=null,midi=null;
+const st=(t,c)=>{$('st').textContent=t;$('st').className=c||'mut'};
+for(let i=0;i<16;i++)$('dev').add(new Option(i+1,i));
+
+/* ---- DX7-Format ---- */
+function nm(b,o){let s='';for(let i=0;i<10;i++){const c=b[o+i]&127;s+=c>=32&&c<127?String.fromCharCode(c):'·'}return s.trim()}
+const chk=(b,a,z)=>{let s=0;for(let i=a;i<z;i++)s+=b[i];return((-s)&127)===b[z]};
+function kind(b){
+ if(b[0]!==0xF0||b[b.length-1]!==0xF7)return{t:'unvollständig'};
+ if(b[1]!==0x43)return{t:'SysEx ('+b.length+' Bytes)'};
+ const s=b[2]>>4,f=b[3];
+ if(s===0&&f===9&&b.length===4104)return{t:'DX7 32-Voice-Bank',bank:1,ok:chk(b,6,4102)};
+ if(s===0&&f===0&&b.length===163)return{t:'DX7 Einzelstimme „'+nm(b,151)+'“',ok:chk(b,6,161)};
+ if(s===2)return{t:'Dump-Request (Format '+f+')'};
+ if(s===1)return{t:'Parameteränderung'};
+ return{t:'Yamaha SysEx ('+b.length+' Bytes)'};
+}
+function log(d,b,x){
+ const e=document.createElement('div');e.className=d;
+ e.textContent=new Date().toLocaleTimeString()+' '+d+' '+b.length+'B '+(x||'')+(b[0]===0xF0?kind(b).t+' · ':'')+H(b.slice(0,16))+(b.length>16?' …':'');
+ const l=$('log');l.prepend(e);while(l.children.length>150)l.lastChild.remove();
+}
+function show(b,src){
+ cur=b;const k=kind(b);
+ $('info').textContent=src+': '+k.t+(k.ok===false?' – Prüfsumme FEHLERHAFT':k.ok?' – Prüfsumme OK':'');
+ const n=$('names');n.textContent='';
+ if(k.bank)for(let i=0;i<32;i++){const d=document.createElement('div');d.textContent=String(i+1).padStart(2,'0')+' '+nm(b,6+128*i+118);n.append(d)}
+ $('hx').value=H(b);
+}
+
+/* ---- Empfang (beide Transportwege) ---- */
+function feed(b){
+ if(b[0]===0xF0)buf=Array.from(b);else if(buf)buf.push(...b);
+ else{if(b[0]<0xF8)log('RX',b);return}
+ if(buf[buf.length-1]===0xF7){const m=Uint8Array.from(buf);buf=null;log('RX',m);show(m,'Empfangen')}
+}
+
+/* ---- Web MIDI (USB, Android per OTG) ---- */
+$('bUsb').onclick=async()=>{
+ if(!navigator.requestMIDIAccess)return st('Web MIDI wird von diesem Browser nicht unterstützt.','err');
+ try{midi=await navigator.requestMIDIAccess({sysex:true});midi.onstatechange=fill;$('ports').hidden=false;fill()}
+ catch(e){st('Web MIDI: '+e.message,'err')}
+};
+function fill(){
+ const keep=[$('sIn').value,$('sOut').value];
+ $('sIn').textContent='';$('sOut').textContent='';$('sIn').add(new Option('alle Eingänge',''));
+ midi.inputs.forEach(p=>$('sIn').add(new Option(p.name,p.id)));
+ midi.outputs.forEach(p=>$('sOut').add(new Option(p.name,p.id)));
+ for(const[s,k]of[[$('sIn'),keep[0]],[$('sOut'),keep[1]]]){
+  if([...s.options].some(o=>o.value===k))s.value=k;
+  else{const o=[...s.options].find(o=>o.value&&/smk|vave/i.test(o.text));if(o)s.value=o.value}}
+ apply();
+}
+function apply(){
+ midi.inputs.forEach(p=>{p.onmidimessage=null});
+ midi.inputs.forEach(p=>{if(!$('sIn').value||$('sIn').value===p.id)p.onmidimessage=e=>feed(e.data)});
+ const o=midi.outputs.get($('sOut').value);
+ tx=o?{send:async b=>o.send(b)}:null;
+ st(o?'Web MIDI: Ausgang „'+o.name+'“':'Kein MIDI-Ausgang gefunden.',o?'ok':'err');
+}
+$('sIn').onchange=$('sOut').onchange=()=>midi&&apply();
+
+/* ---- BLE-MIDI direkt über Web Bluetooth (ohne Zusatz-App) ---- */
+const MS='03b80e5a-ede8-4b33-a751-6ce34ec4c700',MC='7772e5db-3868-4112-a1a9-f2669d106bf3',PL=20;
+$('bBle').onclick=async()=>{
+ if(!navigator.bluetooth)return st('Web Bluetooth nicht verfügbar (Chrome/Android oder Desktop-Chrome nötig, HTTPS).','err');
+ try{
+  const o=$('all').checked?{acceptAllDevices:true,optionalServices:[MS]}:{filters:[{services:[MS]}]};
+  const d=await navigator.bluetooth.requestDevice(o);
+  d.addEventListener('gattserverdisconnected',()=>{tx=null;st('BLE getrennt.','err')});
+  st('Verbinde …');
+  const ch=await(await(await d.gatt.connect()).getPrimaryService(MS)).getCharacteristic(MC);
+  ch.addEventListener('characteristicvaluechanged',e=>{const v=e.target.value;bleRx(new Uint8Array(v.buffer,v.byteOffset,v.byteLength))});
+  await ch.startNotifications();
+  tx={send:b=>bleTx(ch,b)};st('BLE-MIDI verbunden: '+(d.name||'Gerät'),'ok');
+ }catch(e){st('BLE: '+e.message,'err')}
+};
+function bleRx(v){
+ let i=1;const n=v.length;
+ while(i<n){
+  let b=v[i++];
+  if(b&128){
+   if(i<n&&(v[i]&128))b=v[i++];else continue; // b war Timestamp, jetzt Status
+   if(b===0xF0)sx=[b];
+   else if(b===0xF7){if(sx){sx.push(b);feed(Uint8Array.from(sx));sx=null}}
+   else if(b<0xF0){const l=(b&0xE0)===0xC0?1:2;feed(Uint8Array.from([b,...Array.from(v.slice(i,i+l))]));i+=l}
+  }else if(sx)sx.push(b);
+ }
+}
+function bleEnc(m){
+ const t=Date.now()&0x1FFF,h=0x80|((t>>7)&0x3F),l=0x80|(t&0x7F),P=[];
+ let c=[h,l,0xF0];
+ for(let i=1;i<m.length-1;i++){if(c.length>=PL){P.push(c);c=[h]}c.push(m[i])}
+ if(c.length+2>PL){P.push(c);c=[h]}
+ c.push(l,0xF7);P.push(c);return P;
+}
+async function bleTx(ch,b){
+ const w=ch.writeValueWithoutResponse?x=>ch.writeValueWithoutResponse(x):x=>ch.writeValue(x);
+ let P;
+ if(b[0]===0xF0)P=bleEnc(b);
+ else{const t=Date.now()&0x1FFF;P=[[0x80|((t>>7)&0x3F),0x80|(t&0x7F),...b]]}
+ for(const p of P){await w(Uint8Array.from(p));await sleep(10)}
+}
+
+/* ---- Aktionen ---- */
+async function send(b,x){
+ if(!tx)return st('Erst verbinden.','err');
+ try{await tx.send(b);log('TX',b,x)}catch(e){st('Senden fehlgeschlagen: '+e.message,'err')}
+}
+const dev=()=>+$('dev').value;
+$('bReqB').onclick=()=>send(Uint8Array.of(0xF0,0x43,0x20|dev(),9,0xF7));
+$('bReqV').onclick=()=>send(Uint8Array.of(0xF0,0x43,0x20|dev(),0,0xF7));
+$('bSend').onclick=()=>{
+ if(!cur)return st('Nichts zu senden – erst Datei laden oder Dump empfangen.','err');
+ const b=cur.slice();if(b[1]===0x43)b[2]=(b[2]&0xF0)|dev();
+ send(b);
+};
+$('bHex').onclick=()=>{const b=parseHex($('hx').value);if(!b.length)return st('Keine gültigen Hex-Bytes.','err');send(b)};
+$('bLoad').onclick=()=>$('file').click();
+$('file').onchange=async e=>{
+ const f=e.target.files[0];if(!f)return;
+ let b=new Uint8Array(await f.arrayBuffer());
+ if(b[0]!==0xF0)b=parseHex(new TextDecoder().decode(b));
+ const i=b.indexOf(0xF7);e.target.value='';
+ if(b[0]!==0xF0||i<0)return st('Keine gültige SysEx-Datei.','err');
+ show(b.slice(0,i+1),f.name);st('Datei geladen.','ok');
+};
+function blobSave(b,name){
+ const u=URL.createObjectURL(new Blob([b],{type:'application/octet-stream'})),a=document.createElement('a');
+ a.href=u;a.download=name;document.body.append(a);a.click();a.remove();
+ setTimeout(()=>URL.revokeObjectURL(u),4000);
+}
+$('bSave').onclick=async()=>{
+ if(!cur)return st('Nichts zu speichern.','err');
+ const n='smk37-fm-'+new Date().toISOString().slice(0,10);
+  // GitHub Pages: use the browser's normal .syx download.
+ try{blobSave(cur,n+'.syx');st('Als .syx heruntergeladen.','ok')} // normaler Blob-Download
+ catch(e){st('Download fehlgeschlagen: '+e.message+' – „Hex kopieren“ nutzen.','err')}
+};
+$('bCopy').onclick=async()=>{
+ try{await navigator.clipboard.writeText($('hx').value);st('Hex kopiert.','ok')}
+ catch{$('hx').select();document.execCommand('copy');st('Hex markiert/kopiert.')}
+};
+$('bClr').onclick=()=>{$('log').textContent=''};
+</script></body></html>
